@@ -1,0 +1,60 @@
+Drift-Gated VWAP Strategy
+
+Objective
+
+Execute the parent order close to daily VWAP while preserving some spread capture and protecting against persistent directional drift.
+
+Let:
+
+* X: parent-order size
+* s=+1 for buys, s=-1 for sells
+* F_t: cumulative J-shaped market-volume curve
+* Q_t=X F_t: baseline target execution
+* q_t: signed net quantity already executed
+
+1. Core VWAP schedule
+
+Follow the J-shaped cumulative volume curve:
+
+Q_t=X F_t.
+
+Use passive orders when near or ahead of target. Use marketable orders only when materially behind target.
+
+2. Limited spread capture
+
+Allow passive execution slightly ahead of schedule:
+
+Q_t-0.02X \le q_t \le Q_t+0.05X.
+
+For a buy parent, sell only inventory above the current target. Mirror this for sell parents.
+
+Cap total round-trip volume at approximately 0.5X, rather than using the full 3X gross-volume allowance.
+
+3. Drift detection
+
+Define adverse VWAP divergence:
+
+d_t=s\frac{M_t-VWAP_t}{VWAP_t},
+
+where M_t is the current mid-price.
+
+Activate the drift guard only when:
+
+* d_t>60 bps;
+* short-, medium- and long-horizon slopes agree;
+* the recent path is approximately linear;
+* directional efficiency is high;
+* order-flow pressure confirms the move.
+
+4. Frontloading
+
+When activated:
+
+* cancel opposite-side market-making orders;
+* trade only in the parent direction;
+* increase target execution gradually;
+* frontload up to 15\% of X by 120 bps divergence.
+
+If the trend reverses, stop accelerating and let the baseline schedule catch up. Do not immediately unwind the frontloaded position.
+
+All thresholds are initial calibration parameters and should be validated on simulation data.
