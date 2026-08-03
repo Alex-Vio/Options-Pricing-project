@@ -1,14 +1,45 @@
-"""Provisional PM Project 4 strategy candidates for external review.
+"""Standalone PM Project 4 strategy handoff for code or dashboard integration.
 
-Snapshot: 2026-08-03 during the final focused stress run.  These parameters
-are subject to change.  All candidates are causal and use information through
-day t-1 only when setting day-t weights.
+Public contract
+---------------
+``generate_proposal_targets(returns, signals, name)`` accepts a ``(T, N)``
+return panel and three matching signal panels ordered signal_1, signal_2,
+signal_3.  It returns a finite ``(T, N)`` target-weight panel.  Day-t targets
+use information through day t-1 only.  ``PROPOSALS`` contains every candidate
+and parameter. Empirical results are intentionally excluded from this handoff.
+
+The current selection is ``linear_prod``.  The other five entries are genuine
+ablation or safety alternatives, not aliases.  NumPy and pandas are the only
+dependencies.  No project-local imports or hidden fitted objects are needed.
 """
 
 from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
+
+
+RECOMMENDED_PROPOSAL = "linear_prod"
+EVALUATION_CONVENTIONS = {
+    "forward_returns": True,
+    "information_lag_days": 1,
+    "transaction_cost_each_way": 0.0005,
+    "trade_cap_per_security_per_day": 0.05,
+    "trade_cap_penalty": 0.0001,
+    "first_evaluated_day_is_free": True,
+    "drift_denominator": "1 + previous gross return - previous cost",
+    "annualization_days": 250,
+}
+STRESS_SCENARIOS = {
+    "empirical": "60-day joint block bootstrap",
+    "long_blocks": "250-day joint block bootstrap",
+    "high_vol": "60-day joint blocks with demeaned returns scaled 1.5x",
+    "adverse": "half drift and 1.5x demeaned volatility",
+    "no_signal_alpha": "returns and signals resampled independently",
+    "reversed_signal": "joint path with all signals sign-reversed",
+    "zero_drift": "60-day joint blocks with return drift removed",
+    "zero_drift_high_vol": "zero drift and 1.5x demeaned volatility",
+}
 
 
 @dataclass(frozen=True)
@@ -84,7 +115,6 @@ PROPOSALS = {
         ),
     )
 }
-
 
 SIGNAL_MIX = (0.30, 0.40, 0.30)
 SIGNAL_HALFLIVES = (5, 15, 5)
