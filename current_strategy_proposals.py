@@ -6,12 +6,13 @@ Public contract
 return panel and three matching signal panels ordered signal_1, signal_2,
 signal_3.  It returns a finite ``(T, N)`` target-weight panel.  Day-t targets
 use information through day t-1 only.  ``PROPOSALS`` contains every candidate
-and parameter; ``FOCUSED_STRESS_MEDIAN_CAGR`` and
-``LINEAR_PROD_TRAINING_METRICS`` are dashboard-ready results.
+and parameter.  The metric constants below are reproducible snapshots for
+dashboard integration.
 
-The current selection is ``linear_prod``.  The other entries are genuine
-ablation or safety alternatives, not aliases.  NumPy and pandas are the only
-dependencies.  No project-local imports or hidden fitted objects are needed.
+The current selection is ``linear_fast_shrunk_core``.  The other entries are
+genuine ablation or safety alternatives, not aliases.  NumPy and pandas are
+the only dependencies.  No project-local imports or hidden fitted objects are
+needed.
 """
 
 from dataclasses import dataclass
@@ -20,7 +21,7 @@ import numpy as np
 import pandas as pd
 
 
-RECOMMENDED_PROPOSAL = "linear_prod"
+RECOMMENDED_PROPOSAL = "linear_fast_shrunk_core"
 EVALUATION_CONVENTIONS = {
     "forward_returns": True,
     "information_lag_days": 1,
@@ -54,12 +55,66 @@ class Proposal:
     signal_mix: tuple[float, float, float] = (0.30, 0.40, 0.30)
     signal_halflives: tuple[int, int, int] = (5, 15, 5)
     fixed_leverage: bool = False
+    core_mode: str = "equal"
+    core_strength: float = 0.0
+    core_halflife: int = 1000
+    core_warmup: int = 500
+    tilt_mode: str = "fixed"
+    tstat_halflife: int = 120
+    tstat_slope: float = 2.0
+    tstat_shift: float = 1.0
     rationale: str = ""
 
 
 PROPOSALS = {
     item.name: item
     for item in (
+        Proposal(
+            "linear_fast_shrunk_core",
+            0.475,
+            0.0375,
+            6.0,
+            0.5,
+            1.5,
+            signal_halflives=(5, 8, 3),
+            core_mode="ewm_mean_variance",
+            core_strength=0.30,
+            rationale=(
+                "Expected-growth selection: faster signal smoothing plus a mild, "
+                "slowly estimated long-only mean/variance core tilt."
+            ),
+        ),
+        Proposal(
+            "linear_fast_shrunk_core_survival",
+            0.475,
+            0.0300,
+            6.0,
+            0.5,
+            1.5,
+            signal_halflives=(5, 8, 3),
+            core_mode="ewm_mean_variance",
+            core_strength=0.30,
+            rationale=(
+                "Survival-first alternative: the selected rule with a 3.0% "
+                "downside-volatility target to reduce extreme-tail exposure."
+            ),
+        ),
+        Proposal(
+            "linear_fast_shrunk_core_tstat",
+            0.475,
+            0.0375,
+            6.0,
+            0.5,
+            1.5,
+            signal_halflives=(5, 8, 3),
+            core_mode="ewm_mean_variance",
+            core_strength=0.30,
+            tilt_mode="shifted_tanh",
+            rationale=(
+                "Regime-reversal insurance: the same book, with signal exposure "
+                "controlled by a lagged EWMA IC t-stat."
+            ),
+        ),
         Proposal(
             "linear_prod",
             0.475,
@@ -210,6 +265,19 @@ LINEAR_PROD_TRAINING_METRICS = {
     "busted": False,
 }
 
+RECOMMENDED_TRAINING_METRICS = {
+    "cagr": 0.775727,
+    "sharpe": 1.321101,
+    "annual_vol": 0.548165,
+    "max_drawdown": 0.577259,
+    "max_daily_loss": 0.179366,
+    "average_gross": 5.585819,
+    "maximum_gross": 6.406938,
+    "turnover": 0.326514,
+    "cost_bps_per_day": 1.632570,
+    "busted": False,
+}
+
 
 SIGNAL_MIX = (0.30, 0.40, 0.30)
 SIGNAL_HALFLIVES = (5, 15, 5)
@@ -252,9 +320,52 @@ def _timing_feature(signal_2):
     return _ewm(np.clip(z, -3.0, 3.0)[:, None], 5).ravel()
 
 
+def _core_weights(returns, proposal):
+    dates, assets = returns.shape
+    if proposal.core_mode == "equal":
+        return np.full((dates, assets), 1.0 / assets)
+    if proposal.core_mode != "ewm_mean_variance":
+        raise KeyError(f"Unknown core mode {proposal.core_mode!r}")
+    mean = _lag(_ewm(returns, proposal.core_halflife))
+    second = _lag(_ewm(returns * returns, proposal.core_halflife))
+    variance = np.maximum(second - mean * mean, 1e-10)
+    quality = _xs_z(mean / variance)
+    raw = np.maximum(1.0 + proposal.core_strength * quality, 0.25)
+    raw[: proposal.core_warmup] = 1.0
+    return raw / raw.sum(axis=1, keepdims=True)
+
+
+def _daily_ic(score, returns):
+    score = score - score.mean(axis=1, keepdims=True)
+    returns = returns - returns.mean(axis=1, keepdims=True)
+    covariance = np.mean(score * returns, axis=1)
+    variance = np.mean(score * score, axis=1) * np.mean(returns * returns, axis=1)
+    return np.divide(
+        covariance,
+        np.sqrt(np.maximum(variance, 1e-18)),
+        out=np.zeros_like(covariance),
+        where=variance > 1e-18,
+    )
+
+
+def _causal_t_stat(score, returns, halflife):
+    ic = _daily_ic(score, returns)
+    mean = _lag(_ewm(ic[:, None], halflife).ravel())
+    second = _lag(_ewm((ic * ic)[:, None], halflife).ravel())
+    standard_deviation = np.sqrt(np.maximum(second - mean * mean, 1e-8))
+    decay = 2.0 ** (-1.0 / halflife)
+    observations = np.arange(1, len(ic) + 1)
+    sum_weights = (1.0 - decay**observations) / (1.0 - decay)
+    sum_squared = (1.0 - decay ** (2 * observations)) / (1.0 - decay**2)
+    effective_n = sum_weights**2 / sum_squared
+    result = mean / standard_deviation * np.sqrt(effective_n)
+    result[:20] = 0.0
+    return result
+
+
 def _ideal_weights(returns, signals, proposal):
     dates, assets = returns.shape
-    core = _unit_gross(np.ones((dates, assets)))
+    core = _core_weights(returns, proposal)
     if proposal.signal_tilt == 0.0:
         shape = core
     else:
@@ -269,10 +380,20 @@ def _ideal_weights(returns, signals, proposal):
                 for weight, signal in zip(proposal.signal_mix, smooth)
             )
         )
-        signal_book = _unit_gross(core * score)
+        signal_book = _unit_gross(score)
+        if proposal.tilt_mode == "fixed":
+            tilt = np.full(dates, proposal.signal_tilt)
+        elif proposal.tilt_mode == "shifted_tanh":
+            t_stat = _causal_t_stat(score, returns, proposal.tstat_halflife)
+            tilt = proposal.signal_tilt * np.tanh(
+                proposal.tstat_slope * (t_stat + proposal.tstat_shift)
+            )
+            tilt[0] = 0.0
+        else:
+            raise KeyError(f"Unknown tilt mode {proposal.tilt_mode!r}")
         shape = _unit_gross(
-            (1.0 - proposal.signal_tilt) * core
-            + proposal.signal_tilt * signal_book
+            (1.0 - np.abs(tilt[:, None])) * core
+            + tilt[:, None] * signal_book
         )
 
     if proposal.fixed_leverage:
@@ -327,7 +448,7 @@ def _make_executable(returns, ideal):
     return targets
 
 
-def generate_proposal_targets(returns, signals, name="linear_prod"):
+def generate_proposal_targets(returns, signals, name=RECOMMENDED_PROPOSAL):
     """Generate weights for one named proposal from wide NumPy-like panels."""
     if name not in PROPOSALS:
         raise KeyError(f"Unknown proposal {name!r}; choose from {sorted(PROPOSALS)}")
