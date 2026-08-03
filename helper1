@@ -1,0 +1,262 @@
+You are analysing a portfolio-management dataset with:
+
+* 2,500 chronologically ordered training days
+* 20 assets
+* Daily return for each asset
+* Three signals for each asset: signal1, signal2, signal3
+* A future 47,500-day hidden live run
+* Final objective: maximise CAGR
+
+Assume signal values at date (t) are observable before choosing weights for return (r_{t+1}). Explicitly verify this alignment. Never use random train-test splits. Never use future observations in scaling, transformations or estimation. Treat dates, not the approximately 50,000 asset-date rows, as the main independent sampling units.
+
+Use Polars for data processing and pandas/numpy/statsmodels/sklearn where needed for statistical analysis. Fix random seed 42. Save every table as CSV and every chart as PNG.
+
+Phase 1: Data audit and signal structure
+
+Create 01_data_audit.py.
+
+1. Reshape the data into long format:
+
+[
+(\text{date},\text{asset},r,s_1,s_2,s_3)
+]
+
+2. Verify:
+    * Exactly 2,500 unique dates and 20 assets per date
+    * Duplicate date-asset rows
+    * Missing, infinite and constant values
+    * Returns less than or equal to (-100%)
+    * Date ordering and gaps
+    * Whether asset identifiers change
+3. For returns and each signal, report by asset and overall:
+    * Mean, standard deviation, median
+    * 1st, 5th, 25th, 75th, 95th and 99th percentiles
+    * Minimum, maximum, skew and kurtosis
+    * Missing-value rate
+    * Percentage of zero values
+4. Analyse each signal using:
+    * Raw values
+    * Values winsorised at the expanding 1st and 99th percentiles
+    * Daily cross-sectional percentile ranks mapped to ([-0.5,0.5])
+    * Within-asset 252-day rolling z-scores, using only information available by date (t)
+5. Calculate:
+    * Pearson and Spearman correlation between signals
+    * Correlations separately for each asset
+    * Median daily cross-sectional signal correlation
+    * Signal autocorrelation at lags 1, 2, 5, 10, 20, 60 and 252
+    * Daily rank turnover
+    * Percentage of cross-sectional signal rankings that change sign each day
+6. Leakage test:
+    * Correlate each signal at (t) with returns (r_{t+k}) for (k=-20,\ldots,+20)
+    * Negative (k) means the signal is compared with past returns
+    * Flag suspiciously strong contemporaneous or future alignment
+    * Do not treat a relationship with past returns as predictive evidence
+
+Produce:
+
+* data_audit.csv
+* signal_distribution.csv
+* signal_correlations.csv
+* signal_autocorrelation.csv
+* lead_lag_correlations.csv
+* Distribution, autocorrelation and lead-lag plots
+
+Stop and describe any possible look-ahead issue before continuing.
+
+Phase 2: Standalone predictive value
+
+Create 02_signal_predictiveness.py.
+
+Construct:
+
+[
+y_{i,t,k}=r_{i,t+k},\qquad k=1,\ldots,20
+]
+
+and compounded forward returns:
+
+[
+R_{i,t}^{(h)}
+=\prod_{j=1}^{h}(1+r_{i,t+j})-1,
+\qquad h\in{1,2,5,10,20}.
+]
+
+For every signal, transformation and horizon:
+
+1. Daily cross-sectional information coefficient:
+    * Spearman correlation across the 20 assets
+    * Mean IC
+    * Median IC
+    * IC standard deviation
+    * Percentage of dates with correct IC sign
+    * Newey-West t-statistic
+    * Moving-block-bootstrap 95% confidence interval, using 20-day and 60-day blocks
+2. Time-series predictiveness:
+    * Compute correlation separately for every asset
+    * Report median asset correlation
+    * Number of assets with the same coefficient sign
+    * Best and worst assets
+    * Leave-one-asset-out results
+3. Quintile portfolio test:
+    * Sort 20 assets into five groups of four assets
+    * Equal-weight each group
+    * Construct top-minus-bottom returns with gross exposure equal to 1
+    * Report annualised arithmetic return, volatility, Sharpe and CAGR
+    * Calculate turnover
+    * Calculate net CAGR at transaction costs of 0, 1, 2, 5 and 10 basis points per unit traded
+    * Calculate break-even transaction cost
+
+Use:
+
+[
+\operatorname{CAGR}
+=\exp\left(252\cdot\frac{1}{T}
+\sum_t\log(1+r_t)\right)-1.
+]
+
+4. Test monotonicity:
+    * Mean future return for each quintile
+    * Linear slope across quintile number
+    * Whether returns increase consistently from quintile 1 to quintile 5
+5. Signal decay:
+    * Plot predictive coefficient and IC separately for exact future returns (r_{t+k}), (k=1,\ldots,40)
+    * Identify whether the signal predicts immediate returns, delayed returns or return reversal
+    * Estimate the economically useful holding horizon
+
+Do not report naive t-statistics that treat all asset-date rows as independent.
+
+Produce:
+
+* ic_results.csv
+* asset_level_results.csv
+* quintile_results.csv
+* cost_sensitivity.csv
+* signal_decay.csv
+* IC, quintile, cumulative-return and decay plots
+
+Phase 3: Incremental and conditional value
+
+Create 03_joint_signal_analysis.py.
+
+Run these pooled models for each horizon:
+
+[
+r_{i,t+1}
+=\alpha_i+\beta_1s_{1,i,t}
++\beta_2s_{2,i,t}
++\beta_3s_{3,i,t}
++\varepsilon_{i,t+1}.
+]
+
+Estimate:
+
+1. Each signal separately
+2. All three signals jointly
+3. Asset fixed effects
+4. Asset and date fixed effects
+5. Standard errors clustered by date
+6. Two-way clustered standard errors by date and asset
+7. Daily Fama-MacBeth cross-sectional regressions with Newey-West inference
+8. Ridge regression with regularisation chosen only through chronological validation
+
+Report:
+
+* Coefficient
+* Sign
+* Confidence interval
+* Partial (R^2)
+* Incremental out-of-sample prediction improvement
+* Whether the coefficient remains after including the other signals
+
+Test only these nonlinearities:
+
+* Squared signal
+* Signal sign
+* Top and bottom quintile indicators
+* Pairwise interactions between signals
+
+Correct the complete collection of statistical tests using Benjamini-Hochberg false-discovery-rate control.
+
+Stability tests:
+
+* Five consecutive 500-day periods
+* First half versus second half
+* Each individual asset
+* Leave-one-asset-out
+* Low, medium and high trailing 60-day market-volatility regimes
+* Positive and negative trailing 60-day market-return regimes
+* Strong and weak absolute-signal observations
+
+For every signal portfolio, report:
+
+* Percentage of total profit from the best asset
+* Percentage from the best 10 trading days
+* Performance after removing the best asset
+* Performance after removing the best 10 days
+
+Produce:
+
+* joint_regressions.csv
+* fama_macbeth.csv
+* nonlinear_tests.csv
+* regime_results.csv
+* stability_results.csv
+* pnl_concentration.csv
+
+Phase 4: Genuine out-of-sample verification
+
+Create 04_walk_forward_validation.py.
+
+Keep the final 500 days completely untouched until all modelling choices are fixed.
+
+Use the first 2,000 days for expanding-window validation:
+
+* Train 1–1,000, validate 1,001–1,250
+* Train 1–1,250, validate 1,251–1,500
+* Train 1–1,500, validate 1,501–1,750
+* Train 1–1,750, validate 1,751–2,000
+
+Purge observations whose forward-return target overlaps the validation period.
+
+Compare only:
+
+1. Each signal independently
+2. Equal-weight combination of signals whose validated directions agree
+3. Ridge combination of all three signals
+4. Ridge combination excluding signals that fail stability tests
+5. Raw, cross-sectional-rank and rolling-z-score transformations
+
+For this phase, construct unit-gross signal portfolios. Do not optimise leverage yet.
+
+Select the model using:
+
+* Mean validation log return
+* Median fold log return
+* Worst-fold log return
+* Sign consistency
+* Turnover
+* Break-even transaction cost
+* Performance concentration
+
+After selecting exactly one specification, run it once on days 2,001–2,500.
+
+Create SIGNAL_REPORT.md containing one row per signal:
+
+| Signal | Direction | Best horizon | Best transformation | Standalone value | Incremental value | Stable across time | Stable across assets | Cost viable | Holdout result | Decision |
+
+Use only these decisions:
+
+* Keep
+* Keep with reduced weight
+* Use only conditionally
+* Reject
+
+A signal should not be labelled “Keep” unless:
+
+* Its sign is consistent across most validation periods
+* It remains useful jointly with the other signals
+* Its performance is not dominated by one asset or a few dates
+* Its final 500-day holdout result has the same sign
+* It remains economically positive after plausible costs
+
+Do not choose the model with the highest full-sample CAGR. Do not tune using the final 500-day holdout. Explicitly disclose every modelling choice made after observing results.
